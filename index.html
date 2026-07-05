@@ -185,7 +185,10 @@
         <div class="space-y-2">
             <div class="flex items-center justify-between border-b border-slate-800/60 pb-1">
                 <span class="font-bold text-cyan-400 tracking-wide text-xs">🎥 LIVE STREAM</span>
-                <button id="btn-toggle-stream" class="bg-red-600/20 hover:bg-red-600/40 border border-red-500/30 text-red-300 text-[10px] px-3 py-1.5 rounded-lg transition-all">📡 Activate</button>
+                <div class="flex gap-1.5">
+                    <button id="btn-toggle-camera" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[10px] px-2 py-1.5 rounded-lg transition-all">🔄 Switch Cam</button>
+                    <button id="btn-toggle-stream" class="bg-red-600/20 hover:bg-red-600/40 border border-red-500/30 text-red-300 text-[10px] px-3 py-1.5 rounded-lg transition-all">📡 Activate</button>
+                </div>
             </div>
             <div class="grid grid-cols-2 gap-1.5">
                 <div><label class="text-slate-400 text-[10px] font-mono">Blend</label><select id="video-blend-select" class="w-full bg-slate-900 border border-slate-700 text-[11px] rounded px-1.5 py-1 text-slate-100"><option value="normal">Solid</option><option value="additive">Hologram</option></select></div>
@@ -359,7 +362,7 @@ maskTex.colorSpace = THREE.SRGBColorSpace;
 maskTex.minFilter = THREE.LinearFilter;
 maskTex.magFilter = THREE.LinearFilter;
 
-// Video card geometry & material
+// Video card geometry & material with dynamic shader keyMode
 const videoGeo = new THREE.PlaneGeometry(3.6, 6.4);
 const videoMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -379,14 +382,14 @@ const videoMat = new THREE.ShaderMaterial({
         void main() {
             vec4 color = texture2D(map, vUv);
             
-            // Chroma Key (Green Screen removal fallback)
+            // Chroma Key (Green Screen Removal)
             if (keyMode == 2) {
                 float rbMax = max(color.r, color.b);
                 if (color.g > 0.35 && color.g > rbMax * 1.1) {
                     discard;
                 }
             }
-            // Luma Key (Black Background removal fallback)
+            // Luma Key (Black Background Removal)
             else if (keyMode == 1) {
                 float brightness = dot(color.rgb, vec3(0.299, 0.587, 0.114));
                 if (brightness < 0.15) {
@@ -394,7 +397,7 @@ const videoMat = new THREE.ShaderMaterial({
                 }
             }
             
-            // Standard transparency discard (For MediaPipe background cutouts)
+            // Standard transparency discard (MediaPipe Mode)
             if (color.a < 0.05) discard;
             
             color.rgb *= spotlightFactor;
@@ -720,10 +723,38 @@ const VIDEO_PRESETS = { center:{x:0,y:2.7,z:0}, left:{x:-3.5,y:2.7,z:1.5}, right
 let selfieSegmentation = null;
 let mediapipeCamera = null;
 let streamActive = false;
+let facingMode = 'user'; // 'user' (front) or 'environment' (back)
+
+// --- Web Audio Soundscape Setup ---
+let audioCtx = null;
+let audioSource = null;
+let delayNode = null;
+let feedbackGainNode = null;
+let convolverNode = null;
+let reverbDryNode = null;
+let reverbWetNode = null;
+let mainVolumeGain = null;
+let distanceGainNode = null;
+let echoEnabled = true;
+
+// Procedural Stadium Reverb Buffer Generator
+function createReverbBuffer(context, duration, decay) {
+    const sampleRate = context.sampleRate;
+    const length = sampleRate * duration;
+    const impulse = context.createBuffer(2, length, sampleRate);
+    const left = impulse.getChannelData(0);
+    const right = impulse.getChannelData(1);
+    for (let i = 0; i < length; i++) {
+        const percent = i / length;
+        const envelope = Math.pow(1.0 - percent, decay);
+        left[i] = (Math.random() * 2 - 1) * envelope;
+        right[i] = (Math.random() * 2 - 1) * envelope;
+    }
+    return impulse;
+}
 
 function initMediaPipe() {
-    // Prevent duplicate pipelines from creating WebGL inference conflicts
-    if (selfieSegmentation) return;
+    if (selfieSegmentation) return; // Prevent multiple contexts from conflicting on WebGL
 
     selfieSegmentation = new SelfieSegmentation({
         locateFile: (file) => {
@@ -763,14 +794,77 @@ async function activateStream() {
             initMediaPipe();
         }
         
+        // Capture stream with microphone capabilities (incorporating noise cancellation constraints)
         const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: 280, height: 400, facingMode: 'user' }, 
-            audio: false 
+            video: { width: 280, height: 400, facingMode: facingMode }, 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
         });
         videoEl.srcObject = stream;
         await videoEl.play();
         
-        // Start MediaPipe camera
+        // Setup Live Web Audio stadium processing
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
+
+        audioSource = audioCtx.createMediaStreamSource(stream);
+
+        // Instantiate nodes
+        delayNode = audioCtx.createDelay(2.0);
+        feedbackGainNode = audioCtx.createGain();
+        convolverNode = audioCtx.createConvolver();
+        reverbDryNode = audioCtx.createGain();
+        reverbWetNode = audioCtx.createGain();
+        mainVolumeGain = audioCtx.createGain();
+        distanceGainNode = audioCtx.createGain();
+
+        // Synthesize stadium convolver space
+        convolverNode.buffer = createReverbBuffer(audioCtx, 3.8, 2.8);
+
+        // Map interface slider values to starting node parameters
+        const echoFBack = parseFloat(document.getElementById('echo-fback-slider').value);
+        const echoDelay = parseFloat(document.getElementById('echo-delay-slider').value);
+        const reverbMix = parseFloat(document.getElementById('reverb-slider').value);
+        const mainVol = parseFloat(document.getElementById('vol-slider').value);
+
+        delayNode.delayTime.value = echoDelay;
+        feedbackGainNode.gain.value = echoEnabled ? echoFBack : 0.0;
+        reverbWetNode.gain.value = reverbMix;
+        reverbDryNode.gain.value = 1.0 - reverbMix;
+        mainVolumeGain.gain.value = mainVol;
+        distanceGainNode.gain.value = 1.0;
+
+        // Establish DSP Graph
+        // Feed into feedback delay path (Echo)
+        audioSource.connect(delayNode);
+        delayNode.connect(feedbackGainNode);
+        feedbackGainNode.connect(delayNode);
+
+        // Split dry paths (Direct & delayed signals)
+        audioSource.connect(reverbDryNode);
+        delayNode.connect(reverbDryNode);
+
+        // Split wet paths (To convolver reverb engine)
+        audioSource.connect(convolverNode);
+        delayNode.connect(convolverNode);
+        convolverNode.connect(reverbWetNode);
+
+        // Mix down outputs
+        reverbDryNode.connect(mainVolumeGain);
+        reverbWetNode.connect(mainVolumeGain);
+
+        // Master output through Spatial/Distance Attenuator Node
+        mainVolumeGain.connect(distanceGainNode);
+        distanceGainNode.connect(audioCtx.destination);
+        
+        // Start MediaPipe camera processor
         mediapipeCamera = new Camera(videoEl, {
             onFrame: async () => {
                 try {
@@ -792,9 +886,9 @@ async function activateStream() {
         document.getElementById('btn-toggle-stream').classList.remove('border-red-500/30','text-red-300','hover:bg-red-600/40');
         document.getElementById('btn-toggle-stream').classList.add('border-red-500/80','text-red-200','hover:bg-red-600/60','bg-red-600/30');
         
-        console.log('MediaPipe Selfie Segmentation started successfully');
+        console.log('MediaPipe Selfie Segmentation and soundscape activated');
     } catch(e) {
-        alert('Camera access denied or not available');
+        alert('Camera or audio access was not granted or is unavailable');
         console.warn(e);
     }
 }
@@ -808,28 +902,93 @@ function deactivateStream() {
         videoEl.srcObject.getTracks().forEach(t => t.stop());
         videoEl.srcObject = null;
     }
+
+    // Clean up Audio graph safely
+    if (audioSource) {
+        audioSource.disconnect();
+        audioSource = null;
+    }
+    [delayNode, feedbackGainNode, convolverNode, reverbDryNode, reverbWetNode, mainVolumeGain, distanceGainNode].forEach(node => {
+        if (node) {
+            try { node.disconnect(); } catch(e) {}
+        }
+    });
+    delayNode = null;
+    feedbackGainNode = null;
+    convolverNode = null;
+    reverbDryNode = null;
+    reverbWetNode = null;
+    mainVolumeGain = null;
+    distanceGainNode = null;
+
     streamActive = false;
     document.getElementById('live-badge').classList.remove('active');
     document.getElementById('btn-toggle-stream').textContent = '📡 Activate';
     document.getElementById('btn-toggle-stream').classList.remove('border-red-500/80','text-red-200','hover:bg-red-600/60','bg-red-600/30');
     document.getElementById('btn-toggle-stream').classList.add('border-red-500/30','text-red-300','hover:bg-red-600/40');
+    
     // Clear mask canvas
     maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     maskTex.needsUpdate = true;
 }
 
 // --- UI Events ---
-document.getElementById('btn-start').addEventListener('click', () => {
+document.getElementById('btn-start').addEventListener('click', async () => {
     document.getElementById('start-overlay').classList.remove('show');
     document.getElementById('start-overlay').style.display = 'none';
     document.getElementById('dashboard').classList.add('show');
-    // Initialize MediaPipe
+    // Initialize Web Audio Context context on click gesture
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
     initMediaPipe();
 });
 
 document.getElementById('btn-toggle-stream').addEventListener('click', () => {
     if (streamActive) deactivateStream();
     else activateStream();
+});
+
+document.getElementById('btn-toggle-camera').addEventListener('click', () => {
+    facingMode = (facingMode === 'user') ? 'environment' : 'user';
+    if (streamActive) {
+        deactivateStream();
+        activateStream();
+    }
+});
+
+// Soundscape Sliders binding to audio nodes
+document.getElementById('vol-slider').addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    document.getElementById('vol-label').textContent = Math.round(val * 100) + '%';
+    if (mainVolumeGain && audioCtx) {
+        mainVolumeGain.gain.setValueAtTime(val, audioCtx.currentTime);
+    }
+});
+
+document.getElementById('echo-fback-slider').addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    document.getElementById('echo-fback-label').textContent = Math.round(val * 100) + '%';
+    if (feedbackGainNode && audioCtx) {
+        feedbackGainNode.gain.setValueAtTime(echoEnabled ? val : 0.0, audioCtx.currentTime);
+    }
+});
+
+document.getElementById('echo-delay-slider').addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    document.getElementById('echo-delay-label').textContent = Math.round(val * 1000) + 'ms';
+    if (delayNode && audioCtx) {
+        delayNode.delayTime.setValueAtTime(val, audioCtx.currentTime);
+    }
+});
+
+document.getElementById('reverb-slider').addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    document.getElementById('reverb-label').textContent = Math.round(val * 100) + '%';
+    if (reverbWetNode && reverbDryNode && audioCtx) {
+        reverbWetNode.gain.setValueAtTime(val, audioCtx.currentTime);
+        reverbDryNode.gain.setValueAtTime(1.0 - val, audioCtx.currentTime);
+    }
 });
 
 // Sliders
@@ -857,7 +1016,7 @@ document.getElementById('video-blend-select').addEventListener('change', (e) => 
 document.getElementById('video-cutout-select').addEventListener('change', (e) => {
     const mode = e.target.value;
     if (mode === 'mediapipe') {
-        videoMat.uniforms.keyMode.value = 0; // Turn off fallback shader-based keying
+        videoMat.uniforms.keyMode.value = 0;
         if (!streamActive) {
             activateStream();
         }
@@ -881,7 +1040,13 @@ function setupToggle(elId, cb) {
 setupToggle('spotlight-toggle', (a) => { spotlightEnabled = a; spotlight.visible = a; spotlightCone.visible = a; videoMat.uniforms.spotlightFactor.value = a ? 1.6 : 1.0; });
 setupToggle('borders-toggle', (a) => { showBorders = a; wireframeBorder.visible = a; rebuildSpriteSheet(); });
 setupToggle('particles-toggle', (a) => { particlesEnabled = a; });
-setupToggle('echo-toggle', (a) => { echoEnabled = a; });
+setupToggle('echo-toggle', (a) => { 
+    echoEnabled = a; 
+    if (feedbackGainNode && audioCtx) {
+        const feedbackValue = parseFloat(document.getElementById('echo-fback-slider').value);
+        feedbackGainNode.gain.setValueAtTime(a ? feedbackValue : 0.0, audioCtx.currentTime);
+    }
+});
 
 // Presets
 document.getElementById('btn-preset1').addEventListener('click', ()=>loadPreset('liveAid'));
@@ -918,22 +1083,6 @@ document.getElementById('btn-toggle-hud').addEventListener('click', () => {
     const dash = document.getElementById('dashboard');
     dash.classList.toggle('hide-controls');
     document.getElementById('btn-toggle-hud').textContent = dash.classList.contains('hide-controls') ? '👁 Show' : '👁 Hide';
-});
-
-// Audio (dummy)
-let echoEnabled = true;
-function initAudio() {}
-
-// Keyboard
-document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    if (e.key === ' ') { e.preventDefault(); document.getElementById('btn-play').click(); }
-    if (e.key === 'r' || e.key === 'R') document.getElementById('btn-randomize').click();
-    if (e.key === '1') loadPreset('liveAid');
-    if (e.key === '2') loadPreset('military');
-    if (e.key === '3') loadPreset('festival');
-    if (e.key === 'h' || e.key === 'H') document.getElementById('btn-toggle-hud').click();
-    if (e.key === 's' || e.key === 'S') document.getElementById('btn-screenshot').click();
 });
 
 // Resize
@@ -1042,6 +1191,20 @@ function animate(time) {
     else if (motionMode === 'orbit') videoMesh.lookAt(0, videoMesh.position.y, 0);
     else videoMesh.rotation.set(0, 0, 0);
 
+    // Dynamic 3D Audio Distance Attenuation calculations
+    if (distanceGainNode && audioCtx) {
+        const distToCamera = camera.position.distanceTo(videoMesh.position);
+        const minSoundDist = 5.0;
+        const maxSoundDist = 55.0;
+        let volumeFactor = 1.0;
+        
+        if (distToCamera > minSoundDist) {
+            volumeFactor = 1.0 - (distToCamera - minSoundDist) / (maxSoundDist - minSoundDist);
+            volumeFactor = Math.max(0, volumeFactor);
+        }
+        distanceGainNode.gain.setValueAtTime(volumeFactor, audioCtx.currentTime);
+    }
+
     particles.update(globalTime);
     controls.update();
     composer.render();
@@ -1054,8 +1217,8 @@ setTimeout(() => {
 }, 600);
 animate();
 
-console.log('🚀 Crowd Arena with MediaPipe Selfie Segmentation');
-console.log('📡 Click "Activate" to start the camera with human segmentation');
+console.log('🚀 Crowd Arena with MediaPipe Selfie Segmentation & Spatial Web Audio');
+console.log('📡 Click "Activate" to start the camera and microphone processing');
 </script>
 </body>
 </html>
