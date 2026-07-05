@@ -378,7 +378,25 @@ const videoMat = new THREE.ShaderMaterial({
         varying vec2 vUv;
         void main() {
             vec4 color = texture2D(map, vUv);
+            
+            // Chroma Key (Green Screen removal fallback)
+            if (keyMode == 2) {
+                float rbMax = max(color.r, color.b);
+                if (color.g > 0.35 && color.g > rbMax * 1.1) {
+                    discard;
+                }
+            }
+            // Luma Key (Black Background removal fallback)
+            else if (keyMode == 1) {
+                float brightness = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+                if (brightness < 0.15) {
+                    discard;
+                }
+            }
+            
+            // Standard transparency discard (For MediaPipe background cutouts)
             if (color.a < 0.05) discard;
+            
             color.rgb *= spotlightFactor;
             gl_FragColor = color;
         }
@@ -704,6 +722,9 @@ let mediapipeCamera = null;
 let streamActive = false;
 
 function initMediaPipe() {
+    // Prevent duplicate pipelines from creating WebGL inference conflicts
+    if (selfieSegmentation) return;
+
     selfieSegmentation = new SelfieSegmentation({
         locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
@@ -834,17 +855,13 @@ document.getElementById('video-blend-select').addEventListener('change', (e) => 
     videoMat.depthWrite = e.target.value !== 'additive';
 });
 document.getElementById('video-cutout-select').addEventListener('change', (e) => {
-    // For MediaPipe mode, we handle it differently
-    // The MediaPipe segmentation is always applied when stream is active
-    // Other modes are fallbacks
     const mode = e.target.value;
     if (mode === 'mediapipe') {
-        // MediaPipe mode - stream needs to be active
+        videoMat.uniforms.keyMode.value = 0; // Turn off fallback shader-based keying
         if (!streamActive) {
             activateStream();
         }
     } else if (mode === 'luma') {
-        // Will be handled in the shader (keyMode = 1)
         videoMat.uniforms.keyMode.value = 1;
     } else if (mode === 'chroma') {
         videoMat.uniforms.keyMode.value = 2;
