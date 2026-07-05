@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>3D Crowd Simulator · Live Stream Mask</title>
+    <title>3D Crowd Simulator · MediaPipe Selfie Segmentation</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load MediaPipe Selfie Segmentation -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { overflow: hidden; font-family: 'Inter', sans-serif; background: #020617; touch-action: none; }
@@ -82,10 +86,6 @@
             width: 320px; height: 240px;
             opacity: 0.01; pointer-events: none;
         }
-        #video-card {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none;
-        }
         .live-badge {
             position: absolute; top: 8px; right: 12px;
             background: #ef4444; color: white; font-size: 10px;
@@ -117,20 +117,22 @@
 <div id="start-overlay" class="show">
     <div class="max-w-md w-full p-8 glass-panel space-y-6 my-8">
         <h1 class="text-4xl font-extrabold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">Crowd Arena Pro</h1>
-        <p class="text-slate-400 text-sm">Live stream + mask on stage • WebGL crowd</p>
+        <p class="text-slate-400 text-sm">MediaPipe Selfie Segmentation • Live human cutout on stage</p>
         <button id="btn-start" class="w-full py-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white font-bold rounded-xl shadow-lg transition-all text-lg">🚀 Enter Arena</button>
     </div>
 </div>
 
-<!-- Hidden webcam for mask -->
-<video id="webcam-feed" playsinline autoplay muted></video>
+<!-- Hidden webcam for MediaPipe -->
+<video id="webcam-feed" playsinline muted></video>
+<!-- Canvas for MediaPipe processing -->
 <canvas id="mask-canvas" style="display:none;"></canvas>
+<canvas id="segmentation-canvas" style="display:none;"></canvas>
 
 <!-- 3D Scene injected here -->
 <div id="game-container" style="width:100vw;height:100vh;position:fixed;top:0;left:0;z-index:1;"></div>
 
 <!-- Live badge -->
-<div id="live-badge" class="live-badge">🔴 LIVE</div>
+<div id="live-badge" class="live-badge" style="position:fixed;top:12px;right:16px;z-index:25;">🔴 LIVE</div>
 
 <!-- Dashboard -->
 <div id="dashboard" class="glass-panel">
@@ -188,7 +190,7 @@
             <div class="grid grid-cols-2 gap-1.5">
                 <div><label class="text-slate-400 text-[10px] font-mono">Blend</label><select id="video-blend-select" class="w-full bg-slate-900 border border-slate-700 text-[11px] rounded px-1.5 py-1 text-slate-100"><option value="normal">Solid</option><option value="additive">Hologram</option></select></div>
                 <div><label class="text-slate-400 text-[10px] font-mono">Motion</label><select id="video-motion-select" class="w-full bg-slate-900 border border-slate-700 text-[11px] rounded px-1.5 py-1 text-slate-100"><option value="faceCamera">Face Cam</option><option value="static">Static</option><option value="orbit">Orbit</option></select></div>
-                <div><label class="text-slate-400 text-[10px] font-mono">Cutout</label><select id="video-cutout-select" class="w-full bg-slate-900 border border-slate-700 text-[11px] rounded px-1.5 py-1 text-slate-100"><option value="none">Off</option><option value="luma">Luma</option><option value="chroma">Chroma</option></select></div>
+                <div><label class="text-slate-400 text-[10px] font-mono">Cutout</label><select id="video-cutout-select" class="w-full bg-slate-900 border border-slate-700 text-[11px] rounded px-1.5 py-1 text-slate-100"><option value="mediapipe">MediaPipe</option><option value="luma">Luma</option><option value="chroma">Chroma</option><option value="none">Off</option></select></div>
                 <div><label class="text-slate-400 text-[10px] font-mono">Preset</label><select id="video-position-preset" class="w-full bg-slate-900 border border-slate-700 text-[11px] rounded px-1.5 py-1 text-slate-100"><option value="center">Center</option><option value="left">Left</option><option value="right">Right</option><option value="high">High</option></select></div>
             </div>
             <div class="grid grid-cols-2 gap-x-2 gap-y-0.5">
@@ -339,12 +341,17 @@ function buildSeatingRings(colorValue) {
 }
 buildSeatingRings(0x00aaff);
 
-// --- Video / Live Stream Mask ---
+// --- MediaPipe Selfie Segmentation ---
 const videoEl = document.getElementById('webcam-feed');
 const maskCanvas = document.getElementById('mask-canvas');
 const maskCtx = maskCanvas.getContext('2d');
-maskCanvas.width = 320;
-maskCanvas.height = 240;
+maskCanvas.width = 280;
+maskCanvas.height = 400;
+
+const segCanvas = document.getElementById('segmentation-canvas');
+const segCtx = segCanvas.getContext('2d');
+segCanvas.width = 280;
+segCanvas.height = 400;
 
 // Three.js video texture from the masked canvas
 const maskTex = new THREE.CanvasTexture(maskCanvas);
@@ -352,7 +359,7 @@ maskTex.colorSpace = THREE.SRGBColorSpace;
 maskTex.minFilter = THREE.LinearFilter;
 maskTex.magFilter = THREE.LinearFilter;
 
-// Video card geometry & material (transparent mask)
+// Video card geometry & material
 const videoGeo = new THREE.PlaneGeometry(3.6, 6.4);
 const videoMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -371,7 +378,6 @@ const videoMat = new THREE.ShaderMaterial({
         varying vec2 vUv;
         void main() {
             vec4 color = texture2D(map, vUv);
-            // Mask is pre-applied: alpha channel is transparent where background is removed
             if (color.a < 0.05) discard;
             color.rgb *= spotlightFactor;
             gl_FragColor = color;
@@ -489,7 +495,9 @@ function renderSpriteToSheet(x, y, arch, isWaver, blurAmount, frameIdx, cardOpac
     sCtx.clearRect(x, y, 64, 64);
     if (cardOpacity > 0.01) {
         sCtx.fillStyle = `rgba(30,41,59,${cardOpacity})`;
-        sCtx.roundRect(x+3, y+3, 58, 58, 8); sCtx.fill();
+        sCtx.beginPath();
+        sCtx.roundRect(x+3, y+3, 58, 58, 8);
+        sCtx.fill();
         if (showBorders) { sCtx.strokeStyle = `rgba(255,255,255,${cardOpacity*0.25})`; sCtx.lineWidth = 1.5; sCtx.stroke(); }
     }
     const scale = detailScale * 1.0;
@@ -536,7 +544,6 @@ function renderSpriteToSheet(x, y, arch, isWaver, blurAmount, frameIdx, cardOpac
     sCtx.fill();
     sCtx.restore();
 }
-// roundRect polyfill for canvas if needed
 if (!sCtx.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r) {
         if (r > w/2) r = w/2; if (r > h/2) r = h/2;
@@ -551,7 +558,7 @@ function rebuildSpriteSheet() {
     sCtx.clearRect(0, 0, spriteCanvas.width, spriteCanvas.height);
     const blurBase = parseFloat(document.getElementById('blur-slider').value);
     const cardOpacity = parseFloat(document.getElementById('card-slider').value) / 100;
-    const detailScale = 1.0; // simplified
+    const detailScale = 1.0;
     const blurAmounts = [0, blurBase * 0.35, blurBase];
     for (let i = 0; i < 8; i++) {
         const arch = archetypes[i];
@@ -691,30 +698,91 @@ function updateVideoControls() {
 }
 const VIDEO_PRESETS = { center:{x:0,y:2.7,z:0}, left:{x:-3.5,y:2.7,z:1.5}, right:{x:3.5,y:2.7,z:1.5}, high:{x:0,y:6.5,z:0} };
 
-// --- Audio (dummy) ---
-let audioCtx = null, gainNode = null, filterNode = null, delayNode = null, feedbackNode = null, tapGain = null, echoEnabled = true;
-function initAudio() {}
-// --- Stream / Mask logic ---
+// --- MediaPipe Selfie Segmentation Setup ---
+let selfieSegmentation = null;
+let mediapipeCamera = null;
 let streamActive = false;
+
+function initMediaPipe() {
+    selfieSegmentation = new SelfieSegmentation({
+        locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
+        }
+    });
+    
+    selfieSegmentation.setOptions({
+        modelSelection: 0, // 0 = general model, 1 = landscape model
+    });
+    
+    selfieSegmentation.onResults(onSegmentationResults);
+}
+
+function onSegmentationResults(results) {
+    // Draw the video frame with segmentation mask applied
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    
+    // Draw the video frame
+    maskCtx.drawImage(results.image, 0, 0, maskCanvas.width, maskCanvas.height);
+    
+    // Apply the segmentation mask using 'destination-in' to keep only the person
+    maskCtx.globalCompositeOperation = 'destination-in';
+    maskCtx.drawImage(results.segmentationMask, 0, 0, maskCanvas.width, maskCanvas.height);
+    
+    // Reset composite operation
+    maskCtx.globalCompositeOperation = 'source-over';
+    
+    // Update the texture
+    maskTex.needsUpdate = true;
+}
 
 async function activateStream() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: 'user' }, audio: false });
+        // Initialize MediaPipe if not already
+        if (!selfieSegmentation) {
+            initMediaPipe();
+        }
+        
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: 280, height: 400, facingMode: 'user' }, 
+            audio: false 
+        });
         videoEl.srcObject = stream;
         await videoEl.play();
+        
+        // Start MediaPipe camera
+        mediapipeCamera = new Camera(videoEl, {
+            onFrame: async () => {
+                try {
+                    if (selfieSegmentation) {
+                        await selfieSegmentation.send({image: videoEl});
+                    }
+                } catch (error) {
+                    console.error('MediaPipe error:', error);
+                }
+            },
+            width: 280,
+            height: 400
+        });
+        await mediapipeCamera.start();
+        
         streamActive = true;
         document.getElementById('live-badge').classList.add('active');
         document.getElementById('btn-toggle-stream').textContent = '⏹ Stop';
         document.getElementById('btn-toggle-stream').classList.remove('border-red-500/30','text-red-300','hover:bg-red-600/40');
         document.getElementById('btn-toggle-stream').classList.add('border-red-500/80','text-red-200','hover:bg-red-600/60','bg-red-600/30');
-        // start mask loop
-        maskLoop();
+        
+        console.log('MediaPipe Selfie Segmentation started successfully');
     } catch(e) {
         alert('Camera access denied or not available');
         console.warn(e);
     }
 }
+
 function deactivateStream() {
+    if (mediapipeCamera) {
+        try { mediapipeCamera.stop(); } catch(e) {}
+        mediapipeCamera = null;
+    }
     if (videoEl.srcObject) {
         videoEl.srcObject.getTracks().forEach(t => t.stop());
         videoEl.srcObject = null;
@@ -724,31 +792,8 @@ function deactivateStream() {
     document.getElementById('btn-toggle-stream').textContent = '📡 Activate';
     document.getElementById('btn-toggle-stream').classList.remove('border-red-500/80','text-red-200','hover:bg-red-600/60','bg-red-600/30');
     document.getElementById('btn-toggle-stream').classList.add('border-red-500/30','text-red-300','hover:bg-red-600/40');
-    // clear mask canvas
-    maskCtx.clearRect(0,0,maskCanvas.width,maskCanvas.height);
-    maskTex.needsUpdate = true;
-}
-
-function maskLoop() {
-    if (!streamActive) return;
-    requestAnimationFrame(maskLoop);
-    if (videoEl.readyState < 2) return;
-    maskCtx.drawImage(videoEl, 0, 0, maskCanvas.width, maskCanvas.height);
-    // Apply chroma key mask (green screen simulation) – make transparent
-    const imageData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    const data = imageData.data;
-    for (let i = 0; i < data.length; i += 4) {
-        const r = data[i], g = data[i+1], b = data[i+2];
-        // Chroma key: green range
-        const green = g - Math.max(r, b);
-        if (green > 30 && g > 60) {
-            data[i+3] = 0; // transparent
-        } else {
-            // Keep original, but ensure opaque
-            data[i+3] = 255;
-        }
-    }
-    maskCtx.putImageData(imageData, 0, 0);
+    // Clear mask canvas
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     maskTex.needsUpdate = true;
 }
 
@@ -757,11 +802,8 @@ document.getElementById('btn-start').addEventListener('click', () => {
     document.getElementById('start-overlay').classList.remove('show');
     document.getElementById('start-overlay').style.display = 'none';
     document.getElementById('dashboard').classList.add('show');
-    initAudio();
-    // Start video with fallback
-    videoEl.muted = true;
-    // auto-activate stream?
-    // We'll let user click activate
+    // Initialize MediaPipe
+    initMediaPipe();
 });
 
 document.getElementById('btn-toggle-stream').addEventListener('click', () => {
@@ -773,7 +815,6 @@ document.getElementById('btn-toggle-stream').addEventListener('click', () => {
 ['density','grid','waving','sync','reactivity','base-hue','hue-variance','blur','haze','card'].forEach(id => {
     document.getElementById(id+'-slider').addEventListener('input', () => handleSliderInput(true));
 });
-document.getElementById('detail-slider')?.addEventListener('input', () => handleSliderInput(true));
 
 // Video controls
 ['video-x','video-y','video-z','video-scale'].forEach(id => {
@@ -793,7 +834,23 @@ document.getElementById('video-blend-select').addEventListener('change', (e) => 
     videoMat.depthWrite = e.target.value !== 'additive';
 });
 document.getElementById('video-cutout-select').addEventListener('change', (e) => {
-    videoMat.uniforms.keyMode.value = e.target.value === 'luma' ? 1 : e.target.value === 'chroma' ? 2 : 0;
+    // For MediaPipe mode, we handle it differently
+    // The MediaPipe segmentation is always applied when stream is active
+    // Other modes are fallbacks
+    const mode = e.target.value;
+    if (mode === 'mediapipe') {
+        // MediaPipe mode - stream needs to be active
+        if (!streamActive) {
+            activateStream();
+        }
+    } else if (mode === 'luma') {
+        // Will be handled in the shader (keyMode = 1)
+        videoMat.uniforms.keyMode.value = 1;
+    } else if (mode === 'chroma') {
+        videoMat.uniforms.keyMode.value = 2;
+    } else {
+        videoMat.uniforms.keyMode.value = 0;
+    }
 });
 document.getElementById('video-motion-select').addEventListener('change', () => {});
 document.getElementById('lighting-select').addEventListener('change', (e) => applyAtmosphere(e.target.value));
@@ -846,6 +903,10 @@ document.getElementById('btn-toggle-hud').addEventListener('click', () => {
     document.getElementById('btn-toggle-hud').textContent = dash.classList.contains('hide-controls') ? '👁 Show' : '👁 Hide';
 });
 
+// Audio (dummy)
+let echoEnabled = true;
+function initAudio() {}
+
 // Keyboard
 document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -884,6 +945,9 @@ const starsMat = new THREE.PointsMaterial({ color: 0x8888ff, size: 0.12, transpa
 const stars = new THREE.Points(starsGeo, starsMat);
 scene.add(stars);
 
+// Initialize MediaPipe
+initMediaPipe();
+
 // --- Animation ---
 function animate(time) {
     requestAnimationFrame(animate);
@@ -895,8 +959,6 @@ function animate(time) {
     const grid = parseFloat(document.getElementById('grid-slider').value);
     const syncOff = parseFloat(document.getElementById('sync-slider').value);
     const wavingBase = parseFloat(document.getElementById('waving-slider').value);
-    const reactivity = parseFloat(document.getElementById('reactivity-slider').value)/100;
-    const effectiveWaving = Math.min(100, wavingBase + (0.5 - 0.5) * 30); // dummy energy
 
     // Update concert lights
     concertLights.forEach((light) => {
@@ -909,7 +971,7 @@ function animate(time) {
     });
 
     // Crowd update
-    const wavingThreshold = effectiveWaving / 100;
+    const wavingThreshold = wavingBase / 100;
     for (let i = 0; i < density; i++) {
         const mesh = spriteMeshes[i]; if (!mesh) continue;
         const data = spritePool[i];
@@ -975,7 +1037,8 @@ setTimeout(() => {
 }, 600);
 animate();
 
-console.log('🚀 Crowd Arena with Live Mask');
+console.log('🚀 Crowd Arena with MediaPipe Selfie Segmentation');
+console.log('📡 Click "Activate" to start the camera with human segmentation');
 </script>
 </body>
 </html>
