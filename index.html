@@ -5,44 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dance Card Silhouette Prototype</title>
     <style>
-        body {
-            background: #111;
-            color: #fff;
-            font-family: sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-        }
-        /* The final game card container */
-        #game-card {
-            width: 280px;
-            height: 400px;
-            border: 4px solid #ff007f;
-            border-radius: 16px;
-            background: linear-gradient(135deg, #120c1f, #1f1137);
-            box-shadow: 0 0 20px rgba(255, 0, 127, 0.5);
-            overflow: hidden;
-            position: relative;
-        }
-        canvas {
-            width: 100%;
-            height: 100%;
-            display: block;
-        }
-        button {
-            margin-top: 20px;
-            padding: 12px 24px;
-            background: #ff007f;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: bold;
-        }
+        body { background: #111; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        #game-card { width: 280px; height: 400px; border: 4px solid #ff007f; border-radius: 16px; background: linear-gradient(135deg, #120c1f, #1f1137); box-shadow: 0 0 20px rgba(255, 0, 127, 0.5); overflow: hidden; position: relative; }
+        canvas { width: 100%; height: 100%; display: block; }
+        button { margin-top: 20px; padding: 12px 24px; background: #ff007f; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -52,7 +18,6 @@
     </div>
 
     <video id="webcam" playsinline autoplay muted style="display:none;"></video>
-
     <button id="startButton">Start Audition</button>
 
     <script>
@@ -62,7 +27,7 @@
         const startButton = document.getElementById('startButton');
 
         let backgroundFrame = null; 
-        const threshold = 50; // Adjust this: Higher = more aggressive cutoff
+        const threshold = 50; 
 
         startButton.addEventListener('click', async () => {
             try {
@@ -72,59 +37,41 @@
                 });
                 video.srcObject = stream;
                 startButton.style.display = 'none';
-                
-                // Wait for video to be ready before calibrating
-                video.onloadedmetadata = () => {
-                    setTimeout(calibrateBackground, 1000); // 1 second buffer
-                };
+                video.onloadedmetadata = () => setTimeout(calibrateBackground, 1000);
             } catch (err) {
-                alert('Camera access denied or unsupported: ' + err.message);
+                alert('Camera access denied: ' + err.message);
             }
         });
 
         function calibrateBackground() {
-            // Take a snapshot of the current empty view to use as a reference
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = canvas.width;
             tempCanvas.height = canvas.height;
             const tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
             backgroundFrame = tempCtx.getImageData(0, 0, canvas.width, canvas.height).data;
-            
             requestAnimationFrame(processFrame);
         }
 
         function processFrame() {
             if (!backgroundFrame || video.paused || video.ended) return;
 
-            // Draw current video to canvas to get data
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const data = currentFrame.data;
 
-            // Loop through pixels and compare to the background
             for (let i = 0; i < data.length; i += 4) {
                 const r = data[i], g = data[i + 1], b = data[i + 2];
                 const br = backgroundFrame[i], bg = backgroundFrame[i + 1], bb = backgroundFrame[i + 2];
-
-                // Calculate color distance
                 const diff = Math.sqrt((r - br)**2 + (g - bg)**2 + (b - bb)**2);
 
                 if (diff < threshold) {
-                    // This is background (transparent)
-                    data[i + 3] = 0; 
-                } else {
-                    // This is the person (apply neon teal silhouette)
-                    data[i] = 0;     // Red
-                    data[i + 1] = 255; // Green
-                    data[i + 2] = 200; // Blue
-                    data[i + 3] = 255; // Alpha
+                    data[i + 3] = 0; // Transparent background
                 }
+                // Keep original colors for the person
             }
 
-            // Draw the processed pixels
             ctx.putImageData(currentFrame, 0, 0);
-
             requestAnimationFrame(processFrame);
         }
     </script>
